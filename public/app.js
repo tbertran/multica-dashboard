@@ -1,8 +1,10 @@
 const agentBar = document.getElementById('agent-bar');
 const issueTree = document.getElementById('issue-tree');
-const transcriptHeader = document.getElementById('transcript-header');
+const divider = document.getElementById('divider');
+const transcriptTitle = document.getElementById('transcript-title');
 const transcriptLog = document.getElementById('transcript-log');
 const showAllCheckbox = document.getElementById('show-all');
+const autoScrollCheckbox = document.getElementById('auto-scroll');
 const issueCountEl = document.getElementById('issue-count');
 
 let agents = new Map();          // id -> agent
@@ -12,6 +14,8 @@ let selectedIssueId = null;
 let selectedTaskId = null;
 let collapsed = new Set();
 let showAll = false;
+let autoScroll = true;
+let hiddenAgentIds = new Set();
 
 // Only narration reaches the transcript panel — tool_use/tool_result frames
 // are the agent's mechanics, not what a human watching the work wants to read.
@@ -39,6 +43,19 @@ async function refreshAll() {
   renderIssueTree();
 }
 
+// A chip toggled off mutes that agent everywhere the tree decides what's
+// "live" (the working badge, the default context filter) without dropping
+// the agent from the header — the point is narrowing focus, not losing track
+// of who exists.
+function visibleWorkingIssueIds() {
+  if (!hiddenAgentIds.size) return workingIssueIds;
+  const filtered = new Map();
+  for (const [issueId, agentId] of workingIssueIds) {
+    if (!hiddenAgentIds.has(agentId)) filtered.set(issueId, agentId);
+  }
+  return filtered;
+}
+
 function renderAgentBar() {
   agentBar.innerHTML = '';
   const workingAgentIds = [...new Set(workingIssueIds.values())];
@@ -50,8 +67,14 @@ function renderAgentBar() {
     const agent = agents.get(id);
     if (!agent) continue;
     const chip = document.createElement('div');
-    chip.className = 'agent-chip';
+    chip.className = 'agent-chip' + (hiddenAgentIds.has(id) ? ' hidden-agent' : '');
+    chip.title = hiddenAgentIds.has(id) ? 'Hidden — click to show' : 'Click to hide';
     chip.innerHTML = `<span class="dot"></span><span>${escapeHtml(agent.name)}</span>`;
+    chip.addEventListener('click', () => {
+      if (hiddenAgentIds.has(id)) hiddenAgentIds.delete(id); else hiddenAgentIds.add(id);
+      renderAgentBar();
+      renderIssueTree();
+    });
     agentBar.appendChild(chip);
   }
 }
@@ -75,9 +98,9 @@ function buildTree() {
 // Default view: an issue plus the chain of ancestors that gives it context.
 // Without the ancestor walk a live sub-issue would render as a root with its
 // pipeline stripped of the delivery it belongs to.
-function liveKeepSet(byId) {
+function liveKeepSet(byId, liveIds) {
   const keep = new Set();
-  for (const issueId of workingIssueIds.keys()) {
+  for (const issueId of liveIds.keys()) {
     let cur = byId.get(issueId);
     while (cur && !keep.has(cur.id)) {
       keep.add(cur.id);
@@ -89,12 +112,13 @@ function liveKeepSet(byId) {
 
 function renderIssueTree() {
   const { byParent, byId } = buildTree();
-  const keep = showAll ? null : liveKeepSet(byId);
+  const liveIds = visibleWorkingIssueIds();
+  const keep = showAll ? null : liveKeepSet(byId, liveIds);
   issueTree.innerHTML = '';
   const roots = byParent.get('root') || [];
   let shown = 0;
   for (const issue of roots) {
-    const node = renderIssueNode(issue, byParent, 0, keep);
+    const node = renderIssueNode(issue, byParent, 0, keep, liveIds);
     if (node) {
       issueTree.appendChild(node);
       shown++;
@@ -103,18 +127,23 @@ function renderIssueTree() {
   if (!shown) {
     issueTree.innerHTML = '<div class="transcript-empty" style="padding:10px">Nothing actively worked on right now.</div>';
   }
-  issueCountEl.textContent = showAll
-    ? `${issues.length} open issues`
-    : `${keep.size} shown (${workingIssueIds.size} active)`;
+  if (showAll) {
+    issueCountEl.textContent = `${issues.length} open issues`;
+  } else {
+    const contextOnly = keep.size - liveIds.size;
+    issueCountEl.textContent = contextOnly > 0
+      ? `${liveIds.size} being worked, ${contextOnly} shown for context`
+      : `${liveIds.size} being worked`;
+  }
 }
 
-function renderIssueNode(issue, byParent, depth, keep) {
+function renderIssueNode(issue, byParent, depth, keep, liveIds) {
   if (keep && !keep.has(issue.id)) return null;
   const children = byParent.get(issue.id) || [];
   const visibleChildren = keep ? children.filter((c) => keep.has(c.id)) : children;
   const isCollapsed = collapsed.has(issue.id);
   const agent = issue.assignee_id ? agents.get(issue.assignee_id) : null;
-  const isLive = workingIssueIds.has(issue.id);
+  const isLive = liveIds.has(issue.id);
 
   const wrapper = document.createElement('div');
   const row = document.createElement('div');
@@ -139,7 +168,7 @@ function renderIssueNode(issue, byParent, depth, keep) {
 
   if (!isCollapsed) {
     for (const child of visibleChildren) {
-      const childNode = renderIssueNode(child, byParent, depth + 1, keep);
+      const childNode = renderIssueNode(child, byParent, depth + 1, keep, liveIds);
       if (childNode) wrapper.appendChild(childNode);
     }
   }
@@ -153,20 +182,20 @@ async function selectIssue(issue) {
   const agentId = workingIssueIds.get(issue.id);
   if (!agentId) {
     selectedTaskId = null;
-    transcriptHeader.textContent = `${issue.identifier} — ${issue.title} (no active agent session)`;
+    transcriptTitle.textContent = `${issue.identifier} — ${issue.title} (no active agent session)`;
     return;
   }
-  transcriptHeader.textContent = `${issue.identifier} — ${issue.title} — loading…`;
+  transcriptTitle.textContent = `${issue.identifier} — ${issue.title} — loading…`;
   const tasks = await getJSON(`/api/agents/${agentId}/tasks`);
   const task = tasks.find((t) => t.status === 'running' && t.issue_id === issue.id);
   if (!task) {
     selectedTaskId = null;
-    transcriptHeader.textContent = `${issue.identifier} — ${issue.title} (no running task found)`;
+    transcriptTitle.textContent = `${issue.identifier} — ${issue.title} (no running task found)`;
     return;
   }
   selectedTaskId = task.id;
   const agentName = agents.get(agentId)?.name || agentId;
-  transcriptHeader.textContent = `${issue.identifier} — ${issue.title} — ${agentName}`;
+  transcriptTitle.textContent = `${issue.identifier} — ${issue.title} — ${agentName}`;
   const messages = await getJSON(`/api/tasks/${task.id}/messages`);
   const narration = messages.filter((m) => NARRATION_TYPES.has(m.type));
   if (!narration.length) {
@@ -194,7 +223,7 @@ function appendMessage(m) {
   const text = m.content || m.output || '';
   el.innerHTML = `<div class="body">${escapeHtml(text)}</div><div class="time">${escapeHtml(relativeTime(m.created_at))}</div>`;
   transcriptLog.appendChild(el);
-  transcriptLog.scrollTop = transcriptLog.scrollHeight;
+  if (autoScroll) transcriptLog.scrollTop = transcriptLog.scrollHeight;
 }
 
 function escapeHtml(s) {
@@ -204,6 +233,31 @@ function escapeHtml(s) {
 showAllCheckbox.addEventListener('change', () => {
   showAll = showAllCheckbox.checked;
   renderIssueTree();
+});
+
+autoScrollCheckbox.addEventListener('change', () => {
+  autoScroll = autoScrollCheckbox.checked;
+});
+
+const DIVIDER_STORAGE_KEY = 'multica-dashboard:issue-tree-width';
+issueTree.style.width = (localStorage.getItem(DIVIDER_STORAGE_KEY) || 440) + 'px';
+divider.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  divider.classList.add('dragging');
+  document.body.style.userSelect = 'none';
+  const onMove = (moveEvent) => {
+    const width = Math.min(Math.max(moveEvent.clientX, 220), window.innerWidth - 320);
+    issueTree.style.width = width + 'px';
+  };
+  const onUp = () => {
+    divider.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    localStorage.setItem(DIVIDER_STORAGE_KEY, parseInt(issueTree.style.width, 10));
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
 });
 
 let ws;
@@ -232,6 +286,6 @@ function connectWS() {
 }
 
 refreshAll().catch((err) => {
-  transcriptHeader.textContent = `Failed to load: ${err.message}`;
+  transcriptTitle.textContent = `Failed to load: ${err.message}`;
 });
 connectWS();

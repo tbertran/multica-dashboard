@@ -11,16 +11,25 @@
 <body>
   <header id="agent-bar"></header>
   <div id="toolbar">
-    <label id="filter-toggle">
+    <label class="switch">
       <input type="checkbox" id="show-all" />
+      <span class="track"></span>
       <span>Show all open issues</span>
     </label>
     <span id="issue-count"></span>
   </div>
   <main>
     <section id="issue-tree"></section>
+    <div id="divider"></div>
     <section id="transcript">
-      <div id="transcript-header">Select an issue with an active agent to watch it work.</div>
+      <div id="transcript-header">
+        <span id="transcript-title">Select an issue with an active agent to watch it work.</span>
+        <label class="switch">
+          <input type="checkbox" id="auto-scroll" checked />
+          <span class="track"></span>
+          <span>Auto-scroll</span>
+        </label>
+      </div>
       <div id="transcript-log"></div>
     </section>
   </main>
