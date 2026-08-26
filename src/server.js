@@ -10,7 +10,7 @@ const HOST = '127.0.0.1';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png' };
 
 async function serveStatic(req, res) {
   const file = req.url === '/' ? '/index.html' : req.url;
