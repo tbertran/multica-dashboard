@@ -1,0 +1,13 @@
+{
+  "name": "multica-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live dashboard for a Multica fleet: issue tree with nested sub-issues, agent roster, rolling per-task transcripts",
+  "scripts": {
+    "serve": "node src/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
