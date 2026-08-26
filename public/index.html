@@ -3,14 +3,24 @@
 <head>
 <meta charset="utf-8" />
 <title>Multica Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header id="agent-bar"></header>
+  <div id="toolbar">
+    <label id="filter-toggle">
+      <input type="checkbox" id="show-all" />
+      <span>Show all open issues</span>
+    </label>
+    <span id="issue-count"></span>
+  </div>
   <main>
     <section id="issue-tree"></section>
     <section id="transcript">
-      <div id="transcript-header">Select an issue with an active agent to watch its transcript.</div>
+      <div id="transcript-header">Select an issue with an active agent to watch it work.</div>
       <div id="transcript-log"></div>
     </section>
   </main>
