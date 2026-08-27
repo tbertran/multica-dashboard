@@ -4,6 +4,8 @@ Live dashboard for a [Multica](https://github.com/multica-ai/multica) fleet: an 
 tree with nested sub-issues, an agent roster, and a rolling per-task transcript that
 streams as an agent works.
 
+<img width="1076" height="929" alt="image" src="https://github.com/user-attachments/assets/168f511f-2acb-47d8-b467-17049ed8a788" />
+
 ## Why not just poll the CLI
 
 Multica's server exposes a real WebSocket channel (`GET /ws?workspace_id=...`, JWT/PAT
