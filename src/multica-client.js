@@ -46,12 +46,14 @@ export async function listTaskMessages(taskId) {
 }
 
 // Multica's issue URL is /{workspace_slug}/issues/{identifier}. The profile
-// only carries the workspace id, not its slug — "engineering" is the Apollo
-// Engineering workspace this whole dashboard is hardcoded to, same as
-// workspaceId itself.
+// only carries the workspace id, not its slug, so the slug has to come from
+// somewhere else — set MULTICA_WORKSPACE_SLUG. Without it, issues just don't
+// get a link (setTranscriptTitle already degrades to plain text).
 export async function issueUrlBase() {
+  const slug = process.env.MULTICA_WORKSPACE_SLUG;
+  if (!slug) return null;
   const cfg = await loadProfile();
-  return `${cfg.serverUrl}/engineering/issues/`;
+  return `${cfg.serverUrl}/${slug}/issues/`;
 }
 
 export async function createComment(issueId, content, parentId) {

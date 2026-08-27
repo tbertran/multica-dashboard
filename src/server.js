@@ -40,8 +40,9 @@ async function readJSONBody(req) {
 
 async function sendJSON(res, fn) {
   try {
+    const data = JSON.stringify(await fn());
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(await fn()));
+    res.end(data);
   } catch (err) {
     res.writeHead(502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: String(err.message || err) }));

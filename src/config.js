@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-const PROFILE = process.env.MULTICA_PROFILE || 'team-apollo';
+const PROFILE = process.env.MULTICA_PROFILE || 'default';
 
 let cached = null;
 

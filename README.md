@@ -15,7 +15,7 @@ scope for issue/agent/task lifecycle events, or a `task:<id>` scope for that tas
 with `GET /api/tasks/{id}/messages` for the persisted transcript on load, this gives a
 true push-based dashboard instead of a poller — confirmed by reading
 `server/internal/realtime` and `server/pkg/protocol` in the upstream `multica-ai/multica`
-source and by watching real events flow off `multica.apollok12.com`.
+source and by watching real events flow off a live instance.
 
 ## Architecture
 
@@ -48,10 +48,14 @@ Needs an existing `multica` CLI profile — this reuses its token instead of hol
 second copy:
 
 ```sh
-multica --profile team-apollo whoami   # confirms ~/.multica/profiles/team-apollo/config.json exists
+multica whoami                         # confirms ~/.multica/profiles/default/config.json exists
 npm install
 npm run serve                          # http://127.0.0.1:4175
 ```
 
-Set `MULTICA_PROFILE` to use a different profile, `MULTICA_DASHBOARD_PORT` to change
-the port.
+Env vars:
+
+- `MULTICA_PROFILE` — CLI profile to read (default `default`)
+- `MULTICA_WORKSPACE_SLUG` — your workspace's URL slug (`/{slug}/issues/...`), needed
+  for the issue-title link; omit it and issues just render without a link
+- `MULTICA_DASHBOARD_PORT` — port to serve on (default `4175`)

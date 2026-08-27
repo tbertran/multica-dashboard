@@ -2,9 +2,9 @@
 # does not reliably fire for a logon-triggered task (verified: killing the
 # server left it dead for 75+ seconds with the task back in "Ready" state) —
 # so this polls the port itself and relaunches whenever nothing answers.
-$appDir = "C:\Users\Thomas\claude-home\multica-dashboard"
+$appDir = Split-Path -Parent $PSScriptRoot
 $port = 4175
-$node = "C:\nvm4w\nodejs\node.exe"
+$node = (Get-Command node -ErrorAction Stop).Source
 
 while ($true) {
     $listening = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
