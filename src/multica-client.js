@@ -1,17 +1,21 @@
 import WebSocket from 'ws';
 import { loadProfile } from './config.js';
 
-async function api(pathAndQuery, { method = 'GET' } = {}) {
+async function api(pathAndQuery, { method = 'GET', body } = {}) {
   const cfg = await loadProfile();
   const sep = pathAndQuery.includes('?') ? '&' : '?';
   const url = `${cfg.serverUrl}${pathAndQuery}${sep}workspace_id=${cfg.workspaceId}`;
   const res = await fetch(url, {
     method,
-    headers: { Authorization: `Bearer ${cfg.token}` },
+    headers: {
+      Authorization: `Bearer ${cfg.token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`multica ${method} ${pathAndQuery} -> ${res.status}: ${body.slice(0, 300)}`);
+    const responseBody = await res.text().catch(() => '');
+    throw new Error(`multica ${method} ${pathAndQuery} -> ${res.status}: ${responseBody.slice(0, 300)}`);
   }
   return res.json();
 }
@@ -41,6 +45,30 @@ export async function listTaskMessages(taskId) {
   return api(`/api/tasks/${taskId}/messages`);
 }
 
+// Multica's issue URL is /{workspace_slug}/issues/{identifier}. The profile
+// only carries the workspace id, not its slug — "engineering" is the Apollo
+// Engineering workspace this whole dashboard is hardcoded to, same as
+// workspaceId itself.
+export async function issueUrlBase() {
+  const cfg = await loadProfile();
+  return `${cfg.serverUrl}/engineering/issues/`;
+}
+
+export async function createComment(issueId, content, parentId) {
+  return api(`/api/issues/${issueId}/comments`, {
+    method: 'POST',
+    body: { content, type: 'comment', parent_id: parentId || null },
+  });
+}
+
+export async function listComments(issueId) {
+  return api(`/api/issues/${issueId}/comments`);
+}
+
+export async function getMe() {
+  return api('/api/me');
+}
+
 // One shared upstream connection multiplexes every locally-connected browser
 // tab, mirroring how the Multica web app itself uses the hub: auth once,
 // auto-subscribed to the workspace scope, plus on-demand task scopes.
@@ -49,12 +77,24 @@ export class UpstreamFeed {
     this.ws = null;
     this.listeners = new Set();
     this.subscribedTasks = new Set();
-    this.connect();
+    this._connectSafe();
   }
 
   onMessage(fn) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  // connect() is never awaited by its caller (it runs for the connection's
+  // whole lifetime), so any rejection — loadProfile failing, a bad URL, a
+  // network blip right at reconnect time, all realistic after a sleep/wake
+  // cycle — would otherwise be an unhandled rejection. Node kills the whole
+  // process on those by default, taking the REST API down with the socket.
+  _connectSafe() {
+    this.connect().catch((err) => {
+      console.error('multica upstream connect failed, retrying in 5s:', err.message || err);
+      setTimeout(() => this._connectSafe(), 5000);
+    });
   }
 
   async connect() {
@@ -82,7 +122,7 @@ export class UpstreamFeed {
     });
 
     ws.on('close', () => {
-      setTimeout(() => this.connect(), 3000);
+      setTimeout(() => this._connectSafe(), 3000);
     });
     ws.on('error', () => ws.close());
   }

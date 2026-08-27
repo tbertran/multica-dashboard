@@ -1,16 +1,23 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as multica from './multica-client.js';
 
 export const PORT = Number(process.env.MULTICA_DASHBOARD_PORT) || 4175;
-const HOST = '127.0.0.1';
+const HOST = '0.0.0.0';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.ico': 'image/x-icon' };
+
+// This runs unattended overnight with no one watching a terminal, so one bad
+// error must not take the whole dashboard down with it — log and keep
+// serving rather than let Node's default (crash the process) apply.
+process.on('uncaughtException', (err) => console.error('uncaught exception (server kept running):', err));
+process.on('unhandledRejection', (err) => console.error('unhandled rejection (server kept running):', err));
 
 async function serveStatic(req, res) {
   const file = req.url === '/' ? '/index.html' : req.url;
@@ -25,6 +32,12 @@ async function serveStatic(req, res) {
   }
 }
 
+async function readJSONBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+}
+
 async function sendJSON(res, fn) {
   try {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -35,8 +48,34 @@ async function sendJSON(res, fn) {
   }
 }
 
+// The dashboard runs inside an isolated Brave app-mode profile, so a plain
+// <a target="_blank"> opens a new window in THAT profile rather than a tab in
+// the user's real browser. Handing the URL to the OS's own "open" verb opens
+// it through the default browser instead, which reuses an already-running
+// window as a normal new tab. Scheme-restricted to http(s) since this
+// ultimately shells out — narration/comment markdown can link anywhere
+// (GitHub, Linear, ...), not just back into Multica.
+async function openExternal(res, rawUrl) {
+  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+    res.writeHead(400);
+    res.end('url not allowed');
+    return;
+  }
+  execFile('cmd.exe', ['/c', 'start', '', rawUrl], (err) => {
+    if (err) {
+      res.writeHead(500);
+      res.end(String(err));
+      return;
+    }
+    res.writeHead(204);
+    res.end();
+  });
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/api/open') return openExternal(res, url.searchParams.get('url'));
+  if (url.pathname === '/api/config') return sendJSON(res, async () => ({ issueUrlBase: await multica.issueUrlBase() }));
   if (url.pathname === '/api/agents') return sendJSON(res, multica.listAgents);
   if (url.pathname === '/api/working-agents') return sendJSON(res, multica.listWorkingAgents);
   if (url.pathname === '/api/issues') return sendJSON(res, multica.listOpenIssues);
@@ -44,6 +83,23 @@ async function handler(req, res) {
   if (taskMatch) return sendJSON(res, () => multica.listAgentTasks(taskMatch[1]));
   const msgMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/messages$/);
   if (msgMatch) return sendJSON(res, () => multica.listTaskMessages(msgMatch[1]));
+  const commentMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/comments$/);
+  if (commentMatch && req.method === 'POST') {
+    return sendJSON(res, async () => {
+      const body = await readJSONBody(req);
+      return multica.createComment(commentMatch[1], body.content, body.parent_id);
+    });
+  }
+  if (commentMatch && req.method === 'GET') {
+    return sendJSON(res, () => multica.listComments(commentMatch[1]));
+  }
+  if (url.pathname === '/api/me') return sendJSON(res, multica.getMe);
+  if (url.pathname === '/vendor/marked.js') {
+    const body = await readFile(path.join(ROOT, 'node_modules/marked/lib/marked.esm.js'));
+    res.writeHead(200, { 'Content-Type': 'text/javascript' });
+    res.end(body);
+    return;
+  }
   return serveStatic(req, res);
 }
 

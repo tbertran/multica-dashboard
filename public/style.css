@@ -196,6 +196,11 @@ main {
   min-width: 0;
 }
 
+.issue-row.context-row {
+  opacity: 0.45;
+  font-size: 13px;
+}
+
 .issue-row:hover { background: var(--surface-hover); }
 .issue-row.selected { background: var(--surface-selected); }
 
@@ -249,7 +254,12 @@ main {
 .issue-agent {
   flex-shrink: 0;
   font-size: 11px;
-  color: var(--muted-foreground);
+  font-weight: 500;
+  color: var(--foreground);
+  background: var(--surface-selected);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
   max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -280,6 +290,16 @@ main {
   white-space: nowrap;
 }
 
+#transcript-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#transcript-title a:hover {
+  color: var(--brand);
+  text-decoration: underline;
+}
+
 #transcript-log {
   flex: 1;
   overflow-y: auto;
@@ -299,8 +319,8 @@ main {
 }
 
 .narration .body {
-  white-space: pre-wrap;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .narration .time {
@@ -312,4 +332,223 @@ main {
 .transcript-empty {
   color: var(--faint-foreground);
   font-size: 12px;
+}
+
+.narration.comment-sent {
+  border-left-color: var(--success);
+}
+
+.conversations {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.conversations summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: var(--surface-hover);
+  list-style: none;
+}
+
+.conversations summary::-webkit-details-marker {
+  display: none;
+}
+
+.conversations summary::before {
+  content: '▸ ';
+}
+
+.conversations[open] summary::before {
+  content: '▾ ';
+}
+
+.thread {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.comment {
+  margin-bottom: 8px;
+}
+
+.comment.reply {
+  margin-left: 20px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.comment:last-child {
+  margin-bottom: 0;
+}
+
+.comment-meta {
+  font-size: 11px;
+  color: var(--faint-foreground);
+  margin-bottom: 2px;
+}
+
+.comment .body {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.narration .body > :first-child,
+.comment .body > :first-child {
+  margin-top: 0;
+}
+
+.narration .body > :last-child,
+.comment .body > :last-child {
+  margin-bottom: 0;
+}
+
+.narration .body h1, .comment .body h1 { font-size: 1.2em; }
+.narration .body h2, .comment .body h2 { font-size: 1.1em; }
+.narration .body h3, .comment .body h3,
+.narration .body h4, .comment .body h4,
+.narration .body h5, .comment .body h5,
+.narration .body h6, .comment .body h6 { font-size: 1em; }
+
+.narration .body h1, .narration .body h2, .narration .body h3,
+.narration .body h4, .narration .body h5, .narration .body h6,
+.comment .body h1, .comment .body h2, .comment .body h3,
+.comment .body h4, .comment .body h5, .comment .body h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+.narration .body p, .comment .body p { margin: 8px 0; }
+
+.narration .body ul, .comment .body ul,
+.narration .body ol, .comment .body ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.narration .body li, .comment .body li { margin: 2px 0; }
+
+.narration .body blockquote, .comment .body blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.narration .body code, .comment .body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-hover);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.narration .body pre, .comment .body pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--surface-hover);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.narration .body pre code, .comment .body pre code {
+  background: none;
+  padding: 0;
+}
+
+.narration .body a, .comment .body a {
+  color: var(--brand);
+}
+
+#comment-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#comment-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+#comment-input:disabled {
+  opacity: 0.5;
+}
+
+#comment-form button {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--brand);
+  color: var(--surface);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+#comment-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Phone/small-tablet: stack the tree above the transcript instead of a
+   side-by-side split, and drop the drag divider — there's no reasonable
+   place to put a resize handle you can't hover, only tap. The !important on
+   #issue-tree's width overrides the inline style app.js sets from the
+   desktop divider's saved position. */
+@media (max-width: 860px) {
+  main {
+    flex-direction: column;
+  }
+
+  #issue-tree {
+    width: 100% !important;
+    height: 42vh;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  #divider {
+    display: none;
+  }
+
+  #transcript {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .issue-row {
+    padding: 9px 8px;
+  }
+
+  #toolbar,
+  #transcript-header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  #transcript-title {
+    white-space: normal;
+  }
+
+  #comment-form {
+    padding: 10px 12px;
+  }
 }

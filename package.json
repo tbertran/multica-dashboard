@@ -8,6 +8,7 @@
     "serve": "node src/server.js"
   },
   "dependencies": {
+    "marked": "^18.0.11",
     "ws": "^8.18.0"
   }
 }

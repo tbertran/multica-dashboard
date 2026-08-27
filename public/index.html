@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Multica Dashboard</title>
 <link rel="icon" href="/favicon.ico" sizes="any" />
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
@@ -37,6 +38,10 @@
         </label>
       </div>
       <div id="transcript-log"></div>
+      <form id="comment-form">
+        <input type="text" id="comment-input" placeholder="Post a message on this issue…" autocomplete="off" disabled />
+        <button type="submit" disabled>Send</button>
+      </form>
     </section>
   </main>
   <script type="module" src="/app.js"></script>

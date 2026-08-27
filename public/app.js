@@ -1,3 +1,33 @@
+import { marked } from '/vendor/marked.js';
+
+marked.setOptions({ breaks: true });
+
+// Narration and comment content is internal Multica output, not arbitrary
+// public input, but sanitizing anyway is cheap insurance against a prompt
+// injection landing raw HTML in a comment we then render verbatim.
+function sanitizeHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const remove = [];
+  for (const el of template.content.querySelectorAll('*')) {
+    if (['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED'].includes(el.tagName)) {
+      remove.push(el);
+      continue;
+    }
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) el.removeAttribute(attr.name);
+      if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+    }
+  }
+  for (const el of remove) el.remove();
+  return template.innerHTML;
+}
+
+function renderMarkdown(text) {
+  return sanitizeHtml(marked.parse(text || ''));
+}
+
 const agentBar = document.getElementById('agent-bar');
 const issueTree = document.getElementById('issue-tree');
 const divider = document.getElementById('divider');
@@ -6,6 +36,9 @@ const transcriptLog = document.getElementById('transcript-log');
 const showAllCheckbox = document.getElementById('show-all');
 const autoScrollCheckbox = document.getElementById('auto-scroll');
 const issueCountEl = document.getElementById('issue-count');
+const commentForm = document.getElementById('comment-form');
+const commentInput = document.getElementById('comment-input');
+const commentButton = commentForm.querySelector('button');
 
 let agents = new Map();          // id -> agent
 let workingIssueIds = new Map(); // issue_id -> agent_id
@@ -16,6 +49,22 @@ let collapsed = new Set();
 let showAll = false;
 let autoScroll = true;
 let hiddenAgentIds = new Set();
+let issueUrlBase = null;
+let meId = null;
+let replyTargetCommentId = null;
+
+function setTranscriptTitle(text, issue) {
+  if (issue && issueUrlBase) {
+    const href = issueUrlBase + issue.identifier;
+    transcriptTitle.innerHTML = `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>`;
+    transcriptTitle.querySelector('a').addEventListener('click', (e) => {
+      e.preventDefault();
+      fetch(`/api/open?url=${encodeURIComponent(href)}`);
+    });
+  } else {
+    transcriptTitle.textContent = text;
+  }
+}
 
 // Only narration reaches the transcript panel — tool_use/tool_result frames
 // are the agent's mechanics, not what a human watching the work wants to read.
@@ -39,6 +88,14 @@ async function refreshAll() {
     for (const issueId of w.issue_ids || []) workingIssueIds.set(issueId, w.id);
   }
   issues = issueList;
+  if (selectedIssueId && !issues.some((i) => i.id === selectedIssueId)) {
+    selectedIssueId = null;
+    selectedTaskId = null;
+    transcriptTitle.textContent = 'Select an issue with an active agent to watch it work.';
+    transcriptLog.innerHTML = '';
+    commentInput.disabled = true;
+    commentButton.disabled = true;
+  }
   renderAgentBar();
   renderIssueTree();
 }
@@ -127,14 +184,9 @@ function renderIssueTree() {
   if (!shown) {
     issueTree.innerHTML = '<div class="transcript-empty" style="padding:10px">Nothing actively worked on right now.</div>';
   }
-  if (showAll) {
-    issueCountEl.textContent = `${issues.length} open issues`;
-  } else {
-    const contextOnly = keep.size - liveIds.size;
-    issueCountEl.textContent = contextOnly > 0
-      ? `${liveIds.size} being worked, ${contextOnly} shown for context`
-      : `${liveIds.size} being worked`;
-  }
+  issueCountEl.textContent = showAll
+    ? `${issues.length} open issues`
+    : `${liveIds.size} being worked`;
 }
 
 function renderIssueNode(issue, byParent, depth, keep, liveIds) {
@@ -147,7 +199,9 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
 
   const wrapper = document.createElement('div');
   const row = document.createElement('div');
-  row.className = `issue-row status-${issue.status_category || issue.status}` + (issue.id === selectedIssueId ? ' selected' : '');
+  row.className = `issue-row status-${issue.status_category || issue.status}`
+    + (isLive ? '' : ' context-row')
+    + (issue.id === selectedIssueId ? ' selected' : '');
   row.style.paddingLeft = `${8 + depth * 16}px`;
   row.innerHTML = `
     <span class="issue-toggle">${visibleChildren.length ? (isCollapsed ? '▸' : '▾') : ''}</span>
@@ -155,7 +209,7 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
     <span class="issue-id">${escapeHtml(issue.identifier)}</span>
     ${isLive ? '<span class="working-badge">● Working</span>' : ''}
     <span class="issue-title" title="${escapeHtml(issue.title)}">${escapeHtml(issue.title)}</span>
-    ${agent ? `<span class="issue-agent">${escapeHtml(agent.name)}</span>` : ''}
+    ${isLive && agent ? `<span class="issue-agent">${escapeHtml(agent.name)}</span>` : ''}
   `;
   row.querySelector('.issue-toggle').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -177,32 +231,101 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
 
 async function selectIssue(issue) {
   selectedIssueId = issue.id;
+  selectedTaskId = null;
+  replyTargetCommentId = null;
   renderIssueTree();
   transcriptLog.innerHTML = '';
+  commentInput.disabled = false;
+  commentButton.disabled = false;
+  setTranscriptTitle(`${issue.identifier} — ${issue.title} — loading…`, issue);
+
   const agentId = workingIssueIds.get(issue.id);
-  if (!agentId) {
-    selectedTaskId = null;
-    transcriptTitle.textContent = `${issue.identifier} — ${issue.title} (no active agent session)`;
+  let task = null;
+  if (agentId) {
+    const tasks = await getJSON(`/api/agents/${agentId}/tasks`);
+    task = tasks.find((t) => t.status === 'running' && t.issue_id === issue.id);
+  }
+
+  if (task) {
+    selectedTaskId = task.id;
+    const agentName = agents.get(agentId)?.name || agentId;
+    setTranscriptTitle(`${issue.identifier} — ${issue.title} — ${agentName}`, issue);
+    const messages = await getJSON(`/api/tasks/${task.id}/messages`);
+    for (const m of messages.filter((m) => NARRATION_TYPES.has(m.type))) appendMessage(m);
+    ws?.send(JSON.stringify({ type: 'subscribe', scope: 'task', id: task.id }));
+  } else {
+    const reason = agentId ? '(no running task found)' : '(no active agent session)';
+    setTranscriptTitle(`${issue.identifier} — ${issue.title} ${reason}`, issue);
+  }
+
+  await loadConversations(issue.id);
+
+  if (!transcriptLog.children.length) {
+    transcriptLog.innerHTML = '<div class="transcript-empty">Nothing to show yet.</div>';
+  }
+}
+
+function commentAuthorName(comment) {
+  if (comment.author_id === meId) return 'You';
+  if (comment.author_type === 'agent') return agents.get(comment.author_id)?.name || 'Agent';
+  if (comment.author_type === 'system') return 'System';
+  return 'Member';
+}
+
+function renderComment(comment) {
+  const el = document.createElement('div');
+  el.className = 'comment';
+  el.innerHTML = `<div class="comment-meta">${escapeHtml(commentAuthorName(comment))} · ${escapeHtml(relativeTime(comment.created_at))}</div><div class="body">${renderMarkdown(comment.content)}</div>`;
+  return el;
+}
+
+// A "conversation I've participated in" is any top-level thread where I
+// authored the root or a reply. The most recently started one (by root
+// created_at) is where a new message from the compose box lands, so posting
+// never silently opens a second thread alongside one already in progress.
+async function loadConversations(issueId) {
+  let comments;
+  try {
+    comments = await getJSON(`/api/issues/${issueId}/comments`);
+  } catch (err) {
+    console.error(err);
     return;
   }
-  transcriptTitle.textContent = `${issue.identifier} — ${issue.title} — loading…`;
-  const tasks = await getJSON(`/api/agents/${agentId}/tasks`);
-  const task = tasks.find((t) => t.status === 'running' && t.issue_id === issue.id);
-  if (!task) {
-    selectedTaskId = null;
-    transcriptTitle.textContent = `${issue.identifier} — ${issue.title} (no running task found)`;
-    return;
+  if (issueId !== selectedIssueId) return;
+
+  const roots = comments.filter((c) => !c.parent_id).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const repliesByRoot = new Map();
+  for (const c of comments) {
+    if (!c.parent_id) continue;
+    if (!repliesByRoot.has(c.parent_id)) repliesByRoot.set(c.parent_id, []);
+    repliesByRoot.get(c.parent_id).push(c);
   }
-  selectedTaskId = task.id;
-  const agentName = agents.get(agentId)?.name || agentId;
-  transcriptTitle.textContent = `${issue.identifier} — ${issue.title} — ${agentName}`;
-  const messages = await getJSON(`/api/tasks/${task.id}/messages`);
-  const narration = messages.filter((m) => NARRATION_TYPES.has(m.type));
-  if (!narration.length) {
-    transcriptLog.innerHTML = '<div class="transcript-empty">No narration yet — the agent is working silently.</div>';
+  for (const list of repliesByRoot.values()) list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  const myThreads = roots.filter((root) => root.author_id === meId || (repliesByRoot.get(root.id) || []).some((r) => r.author_id === meId));
+  if (!myThreads.length) return;
+
+  replyTargetCommentId = myThreads[myThreads.length - 1].id;
+
+  const details = document.createElement('details');
+  details.className = 'conversations';
+  details.open = true;
+  const summary = document.createElement('summary');
+  summary.textContent = `Your conversation${myThreads.length > 1 ? 's' : ''} (${myThreads.length})`;
+  details.appendChild(summary);
+  for (const root of myThreads) {
+    const thread = document.createElement('div');
+    thread.className = 'thread';
+    thread.appendChild(renderComment(root));
+    for (const reply of repliesByRoot.get(root.id) || []) {
+      const replyEl = renderComment(reply);
+      replyEl.classList.add('reply');
+      thread.appendChild(replyEl);
+    }
+    details.appendChild(thread);
   }
-  for (const m of narration) appendMessage(m);
-  ws?.send(JSON.stringify({ type: 'subscribe', scope: 'task', id: task.id }));
+  transcriptLog.appendChild(details);
+  if (autoScroll) transcriptLog.scrollTop = transcriptLog.scrollHeight;
 }
 
 function relativeTime(iso) {
@@ -221,7 +344,7 @@ function appendMessage(m) {
   const el = document.createElement('div');
   el.className = 'narration';
   const text = m.content || m.output || '';
-  el.innerHTML = `<div class="body">${escapeHtml(text)}</div><div class="time">${escapeHtml(relativeTime(m.created_at))}</div>`;
+  el.innerHTML = `<div class="body">${renderMarkdown(text)}</div><div class="time">${escapeHtml(relativeTime(m.created_at))}</div>`;
   transcriptLog.appendChild(el);
   if (autoScroll) transcriptLog.scrollTop = transcriptLog.scrollHeight;
 }
@@ -229,6 +352,48 @@ function appendMessage(m) {
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// The first message on an issue opens a new top-level comment; every message
+// after that replies inside whichever conversation I last started (tracked
+// live from the comments themselves in loadConversations, not local state —
+// a page reload or a second tab must land in the same place).
+commentForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const content = commentInput.value.trim();
+  if (!content || !selectedIssueId) return;
+  const issueId = selectedIssueId;
+  const parentId = replyTargetCommentId || undefined;
+  commentInput.disabled = true;
+  commentButton.disabled = true;
+  try {
+    const res = await fetch(`/api/issues/${issueId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, parent_id: parentId }),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const comment = await res.json();
+    if (!parentId && issueId === selectedIssueId) replyTargetCommentId = comment.id;
+    commentInput.value = '';
+    if (issueId === selectedIssueId) {
+      const empty = transcriptLog.querySelector('.transcript-empty');
+      if (empty) empty.remove();
+      const el = document.createElement('div');
+      el.className = 'narration comment-sent';
+      el.innerHTML = `<div class="body">${renderMarkdown(content)}</div><div class="time">posted just now${parentId ? ' (reply)' : ''}</div>`;
+      transcriptLog.appendChild(el);
+      if (autoScroll) transcriptLog.scrollTop = transcriptLog.scrollHeight;
+    }
+  } catch (err) {
+    alert(`Failed to post comment: ${err.message}`);
+  } finally {
+    if (issueId === selectedIssueId) {
+      commentInput.disabled = false;
+      commentButton.disabled = false;
+      commentInput.focus();
+    }
+  }
+});
 
 showAllCheckbox.addEventListener('change', () => {
   showAll = showAllCheckbox.checked;
@@ -272,6 +437,10 @@ function scheduleRefresh() {
 
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
+  // A tab left open across the local server dying and coming back (a crash,
+  // an overnight sleep/wake) would otherwise keep showing whatever was in
+  // memory from before the outage — nothing else re-polls on reconnect.
+  ws.addEventListener('open', () => refreshAll().catch((err) => console.error(err)));
   ws.addEventListener('message', (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'task:message' && msg.payload?.task_id === selectedTaskId) {
@@ -285,7 +454,31 @@ function connectWS() {
   ws.addEventListener('close', () => setTimeout(connectWS, 3000));
 }
 
-refreshAll().catch((err) => {
-  transcriptTitle.textContent = `Failed to load: ${err.message}`;
+// Rendered markdown can contain real links (GitHub PRs, Linear tickets, other
+// Multica issues) — route them through the same external-open path as the
+// issue title, one delegated listener instead of one per rendered link.
+transcriptLog.addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a || !/^https?:\/\//i.test(a.href)) return;
+  e.preventDefault();
+  fetch(`/api/open?url=${encodeURIComponent(a.href)}`);
 });
+
+getJSON('/api/config').then((cfg) => { issueUrlBase = cfg.issueUrlBase; }).catch((err) => console.error(err));
+getJSON('/api/me').then((me) => { meId = me.id; }).catch((err) => console.error(err));
+
+// The local Node server not running yet (machine just woke, hasn't been
+// started today) looks identical to it being genuinely broken, so retry
+// silently instead of leaving a dead error behind on a page nobody reloads.
+async function bootLoop() {
+  try {
+    await refreshAll();
+  } catch (err) {
+    const msg = `Can't reach the dashboard server — retrying… (${err.message})`;
+    agentBar.innerHTML = `<span class="empty">${escapeHtml(msg)}</span>`;
+    transcriptTitle.textContent = msg;
+    setTimeout(bootLoop, 3000);
+  }
+}
+bootLoop();
 connectWS();
