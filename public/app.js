@@ -203,11 +203,12 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
     + (isLive ? '' : ' context-row')
     + (issue.id === selectedIssueId ? ' selected' : '');
   row.style.paddingLeft = `${8 + depth * 16}px`;
+  const [idPrefix, ...idRest] = issue.identifier.split('-');
   row.innerHTML = `
     <span class="issue-toggle">${visibleChildren.length ? (isCollapsed ? '▸' : '▾') : ''}</span>
     <span class="status-dot"></span>
-    <span class="issue-id">${escapeHtml(issue.identifier)}</span>
-    ${isLive ? '<span class="working-badge">● Working</span>' : ''}
+    <span class="issue-id"><span class="id-prefix">${escapeHtml(idPrefix)}-</span>${escapeHtml(idRest.join('-'))}</span>
+    ${isLive ? '<span class="working-badge">●<span class="badge-text"> Working</span></span>' : ''}
     <span class="issue-title" title="${escapeHtml(issue.title)}">${escapeHtml(issue.title)}</span>
     ${isLive && agent ? `<span class="issue-agent">${escapeHtml(agent.name)}</span>` : ''}
   `;

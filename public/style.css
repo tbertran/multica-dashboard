@@ -551,4 +551,18 @@ main {
   #comment-form {
     padding: 10px 12px;
   }
+
+  .id-prefix {
+    display: none;
+  }
+
+  .working-badge .badge-text {
+    display: none;
+  }
+
+  .issue-agent {
+    font-size: 9px;
+    max-width: 80px;
+    padding: 1px 6px;
+  }
 }
