@@ -39,6 +39,12 @@ const issueCountEl = document.getElementById('issue-count');
 const commentForm = document.getElementById('comment-form');
 const commentInput = document.getElementById('comment-input');
 const commentButton = commentForm.querySelector('button');
+const fltLookupForm = document.getElementById('flt-lookup-form');
+const fltLookupInput = document.getElementById('flt-lookup-input');
+const fltModalBackdrop = document.getElementById('flt-modal-backdrop');
+const fltModalTitle = document.getElementById('flt-modal-title');
+const fltModalBody = document.getElementById('flt-modal-body');
+const fltModalClose = document.getElementById('flt-modal-close');
 
 let agents = new Map();          // id -> agent
 let workingIssueIds = new Map(); // issue_id -> agent_id
@@ -167,14 +173,25 @@ function liveKeepSet(byId, liveIds) {
   return keep;
 }
 
+// An issue tagged with the "internal" label always shows at the top of the
+// root list, bypassing the live/show-all filter — it's a standing reference,
+// not tracked work that should disappear when nothing is running on it.
+const PINNED_LABEL = 'internal';
+function isPinned(issue) {
+  return (issue.labels || []).some((l) => l.name === PINNED_LABEL);
+}
+
 function renderIssueTree() {
   const { byParent, byId } = buildTree();
   const liveIds = visibleWorkingIssueIds();
   const keep = showAll ? null : liveKeepSet(byId, liveIds);
+  const pinnedIds = new Set(issues.filter(isPinned).map((i) => i.id));
+  if (keep) for (const id of pinnedIds) keep.add(id);
   issueTree.innerHTML = '';
   const roots = byParent.get('root') || [];
+  const orderedRoots = [...roots.filter((r) => pinnedIds.has(r.id)), ...roots.filter((r) => !pinnedIds.has(r.id))];
   let shown = 0;
-  for (const issue of roots) {
+  for (const issue of orderedRoots) {
     const node = renderIssueNode(issue, byParent, 0, keep, liveIds);
     if (node) {
       issueTree.appendChild(node);
@@ -212,13 +229,14 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
     <span class="issue-title" title="${escapeHtml(issue.title)}">${escapeHtml(issue.title)}</span>
     ${isLive && agent ? `<span class="issue-agent">${escapeHtml(agent.name)}</span>` : ''}
   `;
-  row.querySelector('.issue-toggle').addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!visibleChildren.length) return;
-    if (isCollapsed) collapsed.delete(issue.id); else collapsed.add(issue.id);
-    renderIssueTree();
+  row.addEventListener('click', () => {
+    if (visibleChildren.length) {
+      if (isCollapsed) collapsed.delete(issue.id); else collapsed.add(issue.id);
+      renderIssueTree();
+    } else {
+      selectIssue(issue);
+    }
   });
-  row.addEventListener('click', () => selectIssue(issue));
   wrapper.appendChild(row);
 
   if (!isCollapsed) {
@@ -304,17 +322,24 @@ async function loadConversations(issueId) {
   for (const list of repliesByRoot.values()) list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
   const myThreads = roots.filter((root) => root.author_id === meId || (repliesByRoot.get(root.id) || []).some((r) => r.author_id === meId));
-  if (!myThreads.length) return;
+  if (myThreads.length) replyTargetCommentId = myThreads[myThreads.length - 1].id;
 
-  replyTargetCommentId = myThreads[myThreads.length - 1].id;
+  // A pinned issue is a shared log nobody "owns" — show every thread there,
+  // not just ones I've personally posted in.
+  const issue = issues.find((i) => i.id === issueId);
+  const showAllThreads = issue && isPinned(issue);
+  const threadsToShow = showAllThreads ? roots : myThreads;
+  if (!threadsToShow.length) return;
 
   const details = document.createElement('details');
   details.className = 'conversations';
   details.open = true;
   const summary = document.createElement('summary');
-  summary.textContent = `Your conversation${myThreads.length > 1 ? 's' : ''} (${myThreads.length})`;
+  summary.textContent = showAllThreads
+    ? `Comments (${threadsToShow.length})`
+    : `Your conversation${threadsToShow.length > 1 ? 's' : ''} (${threadsToShow.length})`;
   details.appendChild(summary);
-  for (const root of myThreads) {
+  for (const root of threadsToShow) {
     const thread = document.createElement('div');
     thread.className = 'thread';
     thread.appendChild(renderComment(root));
@@ -353,6 +378,127 @@ function appendMessage(m) {
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// Every source the FLT lookup reads from (Multica run/issue timestamps, Linear's
+// API) hands back UTC. The fleet's own convention renders everything in Pacific,
+// labelled PT, so a time here matches what the team sees everywhere else.
+function formatPT(iso) {
+  if (!iso) return null;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  }).format(new Date(iso)) + ' PT';
+}
+
+function fltTimelineEntry(label, iso, approxNote) {
+  if (!iso) return '';
+  return `<li><span class="flt-time">${escapeHtml(formatPT(iso))}</span><span class="flt-label">${escapeHtml(label)}</span>${approxNote ? ` <span class="flt-approx">${escapeHtml(approxNote)}</span>` : ''}</li>`;
+}
+
+function renderFltDelivery(d) {
+  const items = [];
+  items.push(fltTimelineEntry('Dragged into Ready for Agent — gate run started', d.triggeredAt));
+  if (d.engIssue) {
+    items.push(fltTimelineEntry(`Delivery issue ${d.engIdentifier} created`, d.engIssue.createdAt));
+  } else if (d.engIdentifier) {
+    items.push(fltTimelineEntry(`Delivery issue ${d.engIdentifier} created (details unavailable)`, null));
+  }
+  const workRuns = [...d.workRuns].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  for (const wr of workRuns) {
+    const attemptNote = wr.maxAttempts > 1 ? ` (attempt ${wr.attempt}/${wr.maxAttempts})` : '';
+    items.push(fltTimelineEntry(`Work run started${attemptNote}`, wr.startedAt || wr.dispatchedAt || wr.createdAt));
+    if (wr.completedAt) {
+      items.push(fltTimelineEntry(`Work run ${wr.status}${wr.error ? ` — ${wr.error}` : ''}`, wr.completedAt));
+    } else if (wr.status === 'running') {
+      items.push(`<li><span class="flt-label">Still running</span></li>`);
+    }
+  }
+  items.push(fltTimelineEntry(`Gate run ${d.status}${d.failureReason ? ` — ${d.failureReason}` : ''}`, d.completedAt));
+
+  const titleLink = d.engIssue && issueUrlBase
+    ? `<a href="#" data-open="${escapeHtml(issueUrlBase + d.engIdentifier)}">${escapeHtml(d.engIdentifier)} — ${escapeHtml(d.engIssue.title)}</a>`
+    : escapeHtml(d.engIdentifier || 'delivery issue not found');
+  const statusPill = d.engIssue
+    ? `<span class="flt-pill status-${escapeHtml(d.engIssue.statusCategory || d.engIssue.status)}">${escapeHtml(d.engIssue.status)}</span>`
+    : `<span class="flt-pill status-${escapeHtml(d.status)}">gate ${escapeHtml(d.status)}</span>`;
+
+  return `<div class="flt-delivery">
+    <div class="flt-delivery-header"><span>${titleLink}</span>${statusPill}</div>
+    <ul class="flt-timeline">${items.join('')}</ul>
+  </div>`;
+}
+
+function renderFltResult(data) {
+  const linear = data.linear;
+  const parts = [];
+
+  if (linear && !linear.error) {
+    const link = `<a href="#" data-open="${escapeHtml(linear.url)}">${escapeHtml(linear.identifier)}</a>`;
+    parts.push(`<div class="flt-linear-summary">
+      ${link}
+      <span class="flt-pill">${escapeHtml(linear.state || 'unknown state')}</span>
+      ${linear.assignee ? `<span>${escapeHtml(linear.assignee)}</span>` : ''}
+      ${linear.branchName ? `<span class="flt-time">${escapeHtml(linear.branchName)}</span>` : ''}
+    </div>`);
+  } else if (linear?.error) {
+    parts.push(`<div class="flt-error">Linear lookup failed: ${escapeHtml(linear.error)}</div>`);
+  }
+
+  if (!data.deliveries.length) {
+    parts.push(`<div class="flt-empty">No delivery run found — this ticket hasn't been dragged into "Ready for Agent" yet.</div>`);
+  } else {
+    for (const d of data.deliveries) parts.push(renderFltDelivery(d));
+  }
+
+  if (linear && !linear.error && linear.history.length) {
+    const rows = linear.history.map((h) => {
+      const approx = h.timestampApproximate ? ' (time approximate — Linear merges edits into this entry)' : '';
+      return `<div>${escapeHtml(formatPT(h.createdAt))} — ${escapeHtml(h.fromState || '?')} → ${escapeHtml(h.toState || '?')} (${escapeHtml(h.actor || 'unknown')})${escapeHtml(approx)}</div>`;
+    }).join('');
+    parts.push(`<details class="flt-linear-history"><summary>Linear state history</summary>${rows}</details>`);
+  }
+
+  fltModalBody.innerHTML = parts.join('');
+}
+
+async function openFltModal(rawNumber) {
+  const number = String(rawNumber).trim().replace(/^FLT-/i, '');
+  if (!number) return;
+  fltModalTitle.textContent = `FLT-${number}`;
+  fltModalBody.innerHTML = '<div class="flt-empty">Loading…</div>';
+  fltModalBackdrop.hidden = false;
+  try {
+    const data = await getJSON(`/api/flt/${encodeURIComponent(number)}`);
+    renderFltResult(data);
+  } catch (err) {
+    fltModalBody.innerHTML = `<div class="flt-error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closeFltModal() {
+  fltModalBackdrop.hidden = true;
+  fltModalBody.innerHTML = '';
+}
+
+fltLookupForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  openFltModal(fltLookupInput.value);
+  fltLookupInput.value = '';
+});
+
+fltModalClose.addEventListener('click', closeFltModal);
+fltModalBackdrop.addEventListener('click', (e) => {
+  if (e.target === fltModalBackdrop) closeFltModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !fltModalBackdrop.hidden) closeFltModal();
+});
+fltModalBody.addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-open]');
+  if (!a) return;
+  e.preventDefault();
+  fetch(`/api/open?url=${encodeURIComponent(a.dataset.open)}`);
+});
 
 // The first message on an issue opens a new top-level comment; every message
 // after that replies inside whichever conversation I last started (tracked

@@ -1,5 +1,31 @@
 import WebSocket from 'ws';
+import { execFile } from 'node:child_process';
 import { loadProfile } from './config.js';
+
+// "ready → Flight (delivery)" — the autopilot that fires when a Linear FLT ticket
+// is dragged into "Ready for Agent". A lookup with no matching run here means the
+// ticket simply hasn't been dragged yet, not that the lookup failed.
+const FLIGHT_DELIVERY_AUTOPILOT_ID = process.env.MULTICA_FLIGHT_AUTOPILOT_ID || 'b22e8b25-3bff-4df1-a6db-09ac30bf0f1b';
+
+// No REST equivalent exists for "the work-run task tied to this issue" (both
+// plausible paths 404); the nearest REST substitute is one agent's entire,
+// unbounded task history with no server-side issue filter. The CLI has a command
+// built for exactly this, so this is the one deliberate CLI shell-out in a file
+// that otherwise talks straight REST.
+async function cli(...args) {
+  const cfg = await loadProfile();
+  return new Promise((resolve, reject) => {
+    execFile('multica', ['--profile', cfg.profile, '--workspace-id', cfg.workspaceId, ...args, '--output', 'json'],
+      { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(`multica ${args.join(' ')} -> ${stderr || err.message}`));
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseErr) {
+          reject(new Error(`multica ${args.join(' ')} returned non-JSON: ${parseErr.message}`));
+        }
+      });
+  });
+}
 
 async function api(pathAndQuery, { method = 'GET', body } = {}) {
   const cfg = await loadProfile();
@@ -54,6 +80,159 @@ export async function issueUrlBase() {
   if (!slug) return null;
   const cfg = await loadProfile();
   return `${cfg.serverUrl}/${slug}/issues/`;
+}
+
+export async function getIssue(identifier) {
+  return api(`/api/issues/${identifier}`);
+}
+
+// The runs list has no server-side search, so a lookup pages through the whole
+// history and matches client-side. A short in-memory cache keeps repeated lookups
+// (typos, re-checking the same ticket) from re-paging every time; 30s is short
+// enough that a just-dragged ticket still shows up promptly.
+let runsCache = { at: 0, runs: [] };
+async function allFlightDeliveryRuns() {
+  if (Date.now() - runsCache.at < 30_000) return runsCache.runs;
+  const runs = [];
+  const limit = 100;
+  for (let offset = 0; ; offset += limit) {
+    const page = await api(`/api/autopilots/${FLIGHT_DELIVERY_AUTOPILOT_ID}/runs?limit=${limit}&offset=${offset}`);
+    runs.push(...page.runs);
+    if (page.runs.length < limit) break;
+  }
+  runsCache = { at: Date.now(), runs };
+  return runs;
+}
+
+// A ticket's delivery run is found by text-matching its identifier inside the
+// gate run's own prose report — the runs API has no foreign key to either the
+// triggering Linear ticket or the delivery issue it creates (both are stamped
+// only in that free-text `result.output`). Multiple matches mean the ticket was
+// dragged more than once (e.g. re-dispatched after being blocked).
+export async function findFltDeliveryRuns(fltIdentifier) {
+  const runs = await allFlightDeliveryRuns();
+  const pattern = new RegExp(`\\b${fltIdentifier}\\b`);
+  return runs.filter((r) => pattern.test(r.result?.output || ''));
+}
+
+export function extractEngIdentifier(runOutput) {
+  const bold = runOutput.match(/\*\*(ENG-\d+)\*\*/);
+  if (bold) return bold[1];
+  const plain = runOutput.match(/ENG-\d+/);
+  return plain ? plain[0] : null;
+}
+
+const LINEAR_HISTORY_QUERY = (identifier) => `query { issue(id:"${identifier}") {
+  identifier updatedAt branchName url
+  assignee { name }
+  state { name }
+  priority
+  parent { identifier }
+  history(first: 20) {
+    nodes { createdAt fromState { name } toState { name } actor { name } updatedDescription }
+  }
+} }`;
+
+// Linear groups an actor's edits: a later description edit can merge into a
+// state-transition history entry and restamp its createdAt several minutes late.
+// A node carrying both a state change AND updatedDescription is that restamped
+// case — flagged here (never dropped) so the UI can mark its time as approximate
+// rather than treat it as the authoritative drag moment (that's `run.triggered_at`).
+function normalizeLinearHistory(nodes) {
+  return (nodes || []).map((n) => ({
+    createdAt: n.createdAt,
+    fromState: n.fromState?.name || null,
+    toState: n.toState?.name || null,
+    actor: n.actor?.name || null,
+    timestampApproximate: Boolean((n.fromState || n.toState) && n.updatedDescription),
+  })).filter((n) => n.fromState || n.toState);
+}
+
+export async function linearIssue(fltIdentifier) {
+  const raw = await new Promise((resolve, reject) => {
+    execFile('linear', ['api', LINEAR_HISTORY_QUERY(fltIdentifier)], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`linear api -> ${stderr || err.message}`));
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (parseErr) {
+        reject(new Error(`linear api returned non-JSON: ${parseErr.message}`));
+      }
+    });
+  });
+  if (raw.errors?.length) throw new Error(raw.errors.map((e) => e.message).join('; '));
+  const issue = raw.data?.issue;
+  if (!issue) return null;
+  return {
+    identifier: issue.identifier,
+    url: issue.url,
+    state: issue.state?.name || null,
+    assignee: issue.assignee?.name || null,
+    priority: issue.priority,
+    branchName: issue.branchName,
+    parent: issue.parent?.identifier || null,
+    updatedAt: issue.updatedAt,
+    history: normalizeLinearHistory(issue.history?.nodes),
+  };
+}
+
+// The single answer to "what's up with FLT-<n>": every delivery Flight has run
+// for the ticket (newest first), each with its own gate-run and work-run timeline,
+// plus Linear's current state as supplementary context. An empty `deliveries` list
+// means the ticket has never been dragged into "Ready for Agent".
+export async function fltStatus(rawNumber) {
+  const fltIdentifier = `FLT-${String(rawNumber).replace(/^FLT-/i, '')}`;
+  const [runs, linear] = await Promise.all([
+    findFltDeliveryRuns(fltIdentifier),
+    linearIssue(fltIdentifier).catch((err) => ({ error: err.message })),
+  ]);
+
+  const deliveries = await Promise.all(
+    runs.sort((a, b) => new Date(b.triggered_at) - new Date(a.triggered_at)).map(async (run) => {
+      const engIdentifier = extractEngIdentifier(run.result?.output || '');
+      const [engIssue, workRuns] = await Promise.all([
+        engIdentifier ? getIssue(engIdentifier).catch(() => null) : null,
+        engIdentifier ? issueRuns(engIdentifier).catch(() => []) : [],
+      ]);
+      return {
+        runId: run.id,
+        status: run.status,
+        failureReason: run.failure_reason,
+        triggeredAt: run.triggered_at,
+        completedAt: run.completed_at,
+        gateOutput: run.result?.output || null,
+        engIdentifier,
+        engIssue: engIssue ? {
+          id: engIssue.id,
+          title: engIssue.title,
+          status: engIssue.status,
+          statusCategory: engIssue.status_category,
+          createdAt: engIssue.created_at,
+          updatedAt: engIssue.updated_at,
+          assigneeId: engIssue.assignee_id,
+        } : null,
+        workRuns: workRuns.map((t) => ({
+          id: t.id,
+          status: t.status,
+          attempt: t.attempt,
+          maxAttempts: t.max_attempts,
+          createdAt: t.created_at,
+          dispatchedAt: t.dispatched_at,
+          startedAt: t.started_at,
+          completedAt: t.completed_at,
+          error: t.error,
+        })),
+      };
+    })
+  );
+
+  return { fltIdentifier, linear, deliveries };
+}
+
+// No REST path answers "the work-run task for this issue" (see the `cli()` note
+// above), so this one goes through the CLI. Returns a bare array (empty once no
+// task has been dispatched for the issue yet).
+export async function issueRuns(issueUuid) {
+  return cli('issue', 'runs', issueUuid);
 }
 
 export async function createComment(issueId, content, parentId) {

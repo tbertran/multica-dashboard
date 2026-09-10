@@ -95,6 +95,8 @@ async function handler(req, res) {
     return sendJSON(res, () => multica.listComments(commentMatch[1]));
   }
   if (url.pathname === '/api/me') return sendJSON(res, multica.getMe);
+  const fltMatch = url.pathname.match(/^\/api\/flt\/([^/]+)$/);
+  if (fltMatch) return sendJSON(res, () => multica.fltStatus(fltMatch[1]));
   if (url.pathname === '/vendor/marked.js') {
     const body = await readFile(path.join(ROOT, 'node_modules/marked/lib/marked.esm.js'));
     res.writeHead(200, { 'Content-Type': 'text/javascript' });

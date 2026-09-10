@@ -26,6 +26,11 @@
       <span>Show all open issues</span>
     </label>
     <span id="issue-count"></span>
+    <form id="flt-lookup-form">
+      <label for="flt-lookup-input">FLT-</label>
+      <input type="text" id="flt-lookup-input" inputmode="numeric" placeholder="ticket #" autocomplete="off" />
+      <button type="submit">What's up?</button>
+    </form>
   </div>
   <main>
     <section id="issue-tree"></section>
@@ -46,6 +51,15 @@
       </form>
     </section>
   </main>
+  <div id="flt-modal-backdrop" hidden>
+    <div id="flt-modal" role="dialog" aria-modal="true">
+      <div id="flt-modal-header">
+        <div id="flt-modal-title">FLT-</div>
+        <button type="button" id="flt-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div id="flt-modal-body"></div>
+    </div>
+  </div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
