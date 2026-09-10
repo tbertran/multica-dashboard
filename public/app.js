@@ -390,30 +390,36 @@ function formatPT(iso) {
   }).format(new Date(iso)) + ' PT';
 }
 
-function fltTimelineEntry(label, iso, approxNote) {
-  if (!iso) return '';
-  return `<li><span class="flt-time">${escapeHtml(formatPT(iso))}</span><span class="flt-label">${escapeHtml(label)}</span>${approxNote ? ` <span class="flt-approx">${escapeHtml(approxNote)}</span>` : ''}</li>`;
+function fltTimelineEntry(entries, label, iso, approxNote) {
+  if (!iso) return;
+  entries.push({
+    ts: new Date(iso).getTime(),
+    html: `<li><span class="flt-time">${escapeHtml(formatPT(iso))}</span><span class="flt-label">${escapeHtml(label)}</span>${approxNote ? ` <span class="flt-approx">${escapeHtml(approxNote)}</span>` : ''}</li>`,
+  });
 }
 
 function renderFltDelivery(d) {
-  const items = [];
-  items.push(fltTimelineEntry('Dragged into Ready for Agent — gate run started', d.triggeredAt));
+  const entries = [];
+  fltTimelineEntry(entries, 'Dragged into Ready for Agent — gate run started', d.triggeredAt);
   if (d.engIssue) {
-    items.push(fltTimelineEntry(`Delivery issue ${d.engIdentifier} created`, d.engIssue.createdAt));
-  } else if (d.engIdentifier) {
-    items.push(fltTimelineEntry(`Delivery issue ${d.engIdentifier} created (details unavailable)`, null));
+    fltTimelineEntry(entries, `Delivery issue ${d.engIdentifier} created`, d.engIssue.createdAt);
   }
   const workRuns = [...d.workRuns].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   for (const wr of workRuns) {
     const attemptNote = wr.maxAttempts > 1 ? ` (attempt ${wr.attempt}/${wr.maxAttempts})` : '';
-    items.push(fltTimelineEntry(`Work run started${attemptNote}`, wr.startedAt || wr.dispatchedAt || wr.createdAt));
+    const startIso = wr.startedAt || wr.dispatchedAt || wr.createdAt;
+    fltTimelineEntry(entries, `Work run started${attemptNote}${wr.status === 'running' && !wr.completedAt ? ' — still running' : ''}`, startIso);
     if (wr.completedAt) {
-      items.push(fltTimelineEntry(`Work run ${wr.status}${wr.error ? ` — ${wr.error}` : ''}`, wr.completedAt));
-    } else if (wr.status === 'running') {
-      items.push(`<li><span class="flt-label">Still running</span></li>`);
+      fltTimelineEntry(entries, `Work run ${wr.status}${wr.error ? ` — ${wr.error}` : ''}`, wr.completedAt);
     }
   }
-  items.push(fltTimelineEntry(`Gate run ${d.status}${d.failureReason ? ` — ${d.failureReason}` : ''}`, d.completedAt));
+  fltTimelineEntry(entries, `Gate run ${d.status}${d.failureReason ? ` — ${d.failureReason}` : ''}`, d.completedAt);
+
+  entries.sort((a, b) => a.ts - b.ts);
+  const items = entries.map((e) => e.html);
+  if (!d.engIssue && d.engIdentifier) {
+    items.push(`<li><span class="flt-label">Delivery issue ${escapeHtml(d.engIdentifier)} created (details unavailable)</span></li>`);
+  }
 
   const titleLink = d.engIssue && issueUrlBase
     ? `<a href="#" data-open="${escapeHtml(issueUrlBase + d.engIdentifier)}">${escapeHtml(d.engIdentifier)} — ${escapeHtml(d.engIssue.title)}</a>`
@@ -451,7 +457,7 @@ function renderFltResult(data) {
   }
 
   if (linear && !linear.error && linear.history.length) {
-    const rows = linear.history.map((h) => {
+    const rows = [...linear.history].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)).map((h) => {
       const approx = h.timestampApproximate ? ' (time approximate — Linear merges edits into this entry)' : '';
       return `<div>${escapeHtml(formatPT(h.createdAt))} — ${escapeHtml(h.fromState || '?')} → ${escapeHtml(h.toState || '?')} (${escapeHtml(h.actor || 'unknown')})${escapeHtml(approx)}</div>`;
     }).join('');
