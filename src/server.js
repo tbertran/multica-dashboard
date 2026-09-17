@@ -76,7 +76,14 @@ async function openExternal(res, rawUrl) {
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/open') return openExternal(res, url.searchParams.get('url'));
-  if (url.pathname === '/api/config') return sendJSON(res, async () => ({ issueUrlBase: await multica.issueUrlBase() }));
+  if (url.pathname === '/api/config') return sendJSON(res, async () => {
+    const [issueUrlBase, originPropertyId, myFltIds] = await Promise.all([
+      multica.issueUrlBase(),
+      multica.originPropertyId(),
+      multica.myFltIdentifiers(),
+    ]);
+    return { issueUrlBase, originPropertyId, myFltIds };
+  });
   if (url.pathname === '/api/agents') return sendJSON(res, multica.listAgents);
   if (url.pathname === '/api/working-agents') return sendJSON(res, multica.listWorkingAgents);
   if (url.pathname === '/api/issues') return sendJSON(res, multica.listOpenIssues);

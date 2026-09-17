@@ -250,6 +250,43 @@ export async function getMe() {
   return api('/api/me');
 }
 
+// The "Origin" custom property carries the originating FLT identifier
+// (e.g. "FLT-24") on every issue descended from a Linear ticket. Its id is
+// workspace-specific, so it's looked up by name once and cached rather than
+// hardcoded — a recreated workspace would otherwise silently break the filter.
+let originPropertyIdCache = null;
+export async function originPropertyId() {
+  if (originPropertyIdCache) return originPropertyIdCache;
+  const resp = await api('/api/properties');
+  const prop = resp.properties.find((p) => p.name === 'Origin');
+  originPropertyIdCache = prop ? prop.id : null;
+  return originPropertyIdCache;
+}
+
+const LINEAR_ASSIGNEE = process.env.LINEAR_ASSIGNEE_USERNAME || 'tbertran';
+
+// linear-cli has no bulk endpoint faster than one `issue query`, so this is
+// cached briefly rather than re-shelling out on every dashboard refresh.
+let myFltCache = { at: 0, ids: [] };
+export async function myFltIdentifiers() {
+  if (Date.now() - myFltCache.at < 60_000) return myFltCache.ids;
+  const ids = await new Promise((resolve, reject) => {
+    execFile('linear', [
+      'issue', 'query', '--team', 'FLT', '--assignee', LINEAR_ASSIGNEE,
+      '--all-states', '--limit', '0', '--json', '--no-pager',
+    ], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`linear issue query -> ${stderr || err.message}`));
+      try {
+        resolve(JSON.parse(stdout).nodes.map((n) => n.identifier));
+      } catch (parseErr) {
+        reject(new Error(`linear issue query returned non-JSON: ${parseErr.message}`));
+      }
+    });
+  });
+  myFltCache = { at: Date.now(), ids };
+  return ids;
+}
+
 // One shared upstream connection multiplexes every locally-connected browser
 // tab, mirroring how the Multica web app itself uses the hub: auth once,
 // auto-subscribed to the workspace scope, plus on-demand task scopes.

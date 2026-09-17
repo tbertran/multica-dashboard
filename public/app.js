@@ -29,11 +29,14 @@ function renderMarkdown(text) {
 }
 
 const agentBar = document.getElementById('agent-bar');
+const agentBarToggle = document.getElementById('agent-bar-toggle');
+const agentChips = document.getElementById('agent-chips');
+const agentBarShowAll = document.getElementById('agent-bar-show-all');
 const issueTree = document.getElementById('issue-tree');
 const divider = document.getElementById('divider');
 const transcriptTitle = document.getElementById('transcript-title');
 const transcriptLog = document.getElementById('transcript-log');
-const showAllCheckbox = document.getElementById('show-all');
+const onlyMineCheckbox = document.getElementById('only-mine');
 const autoScrollCheckbox = document.getElementById('auto-scroll');
 const issueCountEl = document.getElementById('issue-count');
 const commentForm = document.getElementById('comment-form');
@@ -52,10 +55,13 @@ let issues = [];
 let selectedIssueId = null;
 let selectedTaskId = null;
 let collapsed = new Set();
-let showAll = false;
+let onlyMine = false;
 let autoScroll = true;
 let hiddenAgentIds = new Set();
+let agentBarCollapsed = false;
 let issueUrlBase = null;
+let originPropertyId = null;
+let myFltIds = new Set();
 let meId = null;
 let replyTargetCommentId = null;
 
@@ -120,10 +126,12 @@ function visibleWorkingIssueIds() {
 }
 
 function renderAgentBar() {
-  agentBar.innerHTML = '';
+  agentBar.classList.toggle('collapsed', agentBarCollapsed);
+  agentChips.innerHTML = '';
   const workingAgentIds = [...new Set(workingIssueIds.values())];
+  agentBarShowAll.hidden = !hiddenAgentIds.size;
   if (!workingAgentIds.length) {
-    agentBar.innerHTML = '<span class="empty">No agents currently working</span>';
+    agentChips.innerHTML = '<span class="empty">No agents currently working</span>';
     return;
   }
   for (const id of workingAgentIds) {
@@ -132,15 +140,32 @@ function renderAgentBar() {
     const chip = document.createElement('div');
     chip.className = 'agent-chip' + (hiddenAgentIds.has(id) ? ' hidden-agent' : '');
     chip.title = hiddenAgentIds.has(id) ? 'Hidden — click to show' : 'Click to hide';
-    chip.innerHTML = `<span class="dot"></span><span>${escapeHtml(agent.name)}</span>`;
+    chip.innerHTML = `<span class="dot"></span><span>${escapeHtml(agent.name)}</span><button type="button" class="chip-only">only</button>`;
     chip.addEventListener('click', () => {
       if (hiddenAgentIds.has(id)) hiddenAgentIds.delete(id); else hiddenAgentIds.add(id);
       renderAgentBar();
       renderIssueTree();
     });
-    agentBar.appendChild(chip);
+    chip.querySelector('.chip-only').addEventListener('click', (e) => {
+      e.stopPropagation();
+      hiddenAgentIds = new Set(workingAgentIds.filter((otherId) => otherId !== id));
+      renderAgentBar();
+      renderIssueTree();
+    });
+    agentChips.appendChild(chip);
   }
 }
+
+agentBarToggle.addEventListener('click', () => {
+  agentBarCollapsed = !agentBarCollapsed;
+  renderAgentBar();
+});
+
+agentBarShowAll.addEventListener('click', () => {
+  hiddenAgentIds = new Set();
+  renderAgentBar();
+  renderIssueTree();
+});
 
 function buildTree() {
   const byParent = new Map();
@@ -173,37 +198,56 @@ function liveKeepSet(byId, liveIds) {
   return keep;
 }
 
-// An issue tagged with the "internal" label always shows at the top of the
-// root list, bypassing the live/show-all filter — it's a standing reference,
-// not tracked work that should disappear when nothing is running on it.
-const PINNED_LABEL = 'internal';
+// True when the issue's Origin property (the FLT ticket it descends from) is
+// assigned to you.
+function isMine(issue) {
+  const origin = issue.properties && originPropertyId && issue.properties[originPropertyId];
+  return !!origin && myFltIds.has(origin);
+}
+
+// "Only mine" narrows which live issues count as live — it never replaces the
+// live filter, so it can never surface a not-currently-running issue.
+function filterToMine(liveIds, byId) {
+  const filtered = new Map();
+  for (const [issueId, agentId] of liveIds) {
+    const issue = byId.get(issueId);
+    if (issue && isMine(issue)) filtered.set(issueId, agentId);
+  }
+  return filtered;
+}
+
+// The Limits task always shows at the top of the root list, bypassing the
+// live/mine filter — it's a standing reference, not tracked work that should
+// disappear when nothing is running on it.
+const PINNED_IDENTIFIER = 'ENG-697';
 function isPinned(issue) {
-  return (issue.labels || []).some((l) => l.name === PINNED_LABEL);
+  return issue.identifier === PINNED_IDENTIFIER;
 }
 
 function renderIssueTree() {
   const { byParent, byId } = buildTree();
   const liveIds = visibleWorkingIssueIds();
-  const keep = showAll ? null : liveKeepSet(byId, liveIds);
+  const relevantLiveIds = onlyMine ? filterToMine(liveIds, byId) : liveIds;
+  const keep = liveKeepSet(byId, relevantLiveIds);
   const pinnedIds = new Set(issues.filter(isPinned).map((i) => i.id));
-  if (keep) for (const id of pinnedIds) keep.add(id);
+  for (const id of pinnedIds) keep.add(id);
   issueTree.innerHTML = '';
   const roots = byParent.get('root') || [];
   const orderedRoots = [...roots.filter((r) => pinnedIds.has(r.id)), ...roots.filter((r) => !pinnedIds.has(r.id))];
   let shown = 0;
   for (const issue of orderedRoots) {
-    const node = renderIssueNode(issue, byParent, 0, keep, liveIds);
+    const node = renderIssueNode(issue, byParent, 0, keep, relevantLiveIds);
     if (node) {
       issueTree.appendChild(node);
       shown++;
     }
   }
   if (!shown) {
-    issueTree.innerHTML = '<div class="transcript-empty" style="padding:10px">Nothing actively worked on right now.</div>';
+    issueTree.innerHTML = onlyMine
+      ? '<div class="transcript-empty" style="padding:10px">Nothing of yours is running right now.</div>'
+      : '<div class="transcript-empty" style="padding:10px">Nothing actively worked on right now.</div>';
   }
-  issueCountEl.textContent = showAll
-    ? `${issues.length} open issues`
-    : `${liveIds.size} being worked`;
+  issueCountEl.textContent = `${relevantLiveIds.size} being worked`;
 }
 
 function renderIssueNode(issue, byParent, depth, keep, liveIds) {
@@ -548,8 +592,8 @@ commentForm.addEventListener('submit', async (e) => {
   }
 });
 
-showAllCheckbox.addEventListener('change', () => {
-  showAll = showAllCheckbox.checked;
+onlyMineCheckbox.addEventListener('change', () => {
+  onlyMine = onlyMineCheckbox.checked;
   renderIssueTree();
 });
 
@@ -617,7 +661,12 @@ transcriptLog.addEventListener('click', (e) => {
   fetch(`/api/open?url=${encodeURIComponent(a.href)}`);
 });
 
-getJSON('/api/config').then((cfg) => { issueUrlBase = cfg.issueUrlBase; }).catch((err) => console.error(err));
+getJSON('/api/config').then((cfg) => {
+  issueUrlBase = cfg.issueUrlBase;
+  originPropertyId = cfg.originPropertyId;
+  myFltIds = new Set(cfg.myFltIds || []);
+  if (onlyMine) renderIssueTree();
+}).catch((err) => console.error(err));
 getJSON('/api/me').then((me) => { meId = me.id; }).catch((err) => console.error(err));
 
 // The local Node server not running yet (machine just woke, hasn't been
