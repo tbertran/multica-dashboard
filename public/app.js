@@ -37,6 +37,7 @@ const divider = document.getElementById('divider');
 const transcriptTitle = document.getElementById('transcript-title');
 const transcriptLog = document.getElementById('transcript-log');
 const onlyMineCheckbox = document.getElementById('only-mine');
+const issueFilterInput = document.getElementById('issue-filter');
 const autoScrollCheckbox = document.getElementById('auto-scroll');
 const issueCountEl = document.getElementById('issue-count');
 const commentForm = document.getElementById('comment-form');
@@ -56,6 +57,7 @@ let selectedIssueId = null;
 let selectedTaskId = null;
 let collapsed = new Set();
 let onlyMine = false;
+let issueFilterText = '';
 let autoScroll = true;
 let hiddenAgentIds = new Set();
 let agentBarCollapsed = false;
@@ -198,9 +200,17 @@ function liveKeepSet(byId, liveIds) {
   return keep;
 }
 
-// True when the issue's Origin property (the FLT ticket it descends from) is
-// assigned to you.
+// The "(TB)" name suffix is the only signal marking an agent as a personal
+// one acting on your behalf (Watchdog (TB), PR Reviewer (TB), ...) — there's
+// no owner field on the agent object itself.
+function isPersonalAgent(agentId) {
+  const agent = agents.get(agentId);
+  return !!agent && /\(TB\)\s*$/.test((agent.name || '').trim());
+}
+
 function isMine(issue) {
+  if (issue.creator_type === 'member') return issue.creator_id === meId;
+  if (issue.creator_type === 'agent' && isPersonalAgent(issue.creator_id)) return true;
   const origin = issue.properties && originPropertyId && issue.properties[originPropertyId];
   return !!origin && myFltIds.has(origin);
 }
@@ -216,6 +226,21 @@ function filterToMine(liveIds, byId) {
   return filtered;
 }
 
+function matchesFilterText(issue) {
+  if (!issueFilterText) return true;
+  return `${issue.identifier} ${issue.title}`.toLowerCase().includes(issueFilterText);
+}
+
+function filterByText(liveIds, byId) {
+  if (!issueFilterText) return liveIds;
+  const filtered = new Map();
+  for (const [issueId, agentId] of liveIds) {
+    const issue = byId.get(issueId);
+    if (issue && matchesFilterText(issue)) filtered.set(issueId, agentId);
+  }
+  return filtered;
+}
+
 // The Limits task always shows at the top of the root list, bypassing the
 // live/mine filter — it's a standing reference, not tracked work that should
 // disappear when nothing is running on it.
@@ -227,7 +252,8 @@ function isPinned(issue) {
 function renderIssueTree() {
   const { byParent, byId } = buildTree();
   const liveIds = visibleWorkingIssueIds();
-  const relevantLiveIds = onlyMine ? filterToMine(liveIds, byId) : liveIds;
+  let relevantLiveIds = onlyMine ? filterToMine(liveIds, byId) : liveIds;
+  relevantLiveIds = filterByText(relevantLiveIds, byId);
   const keep = liveKeepSet(byId, relevantLiveIds);
   const pinnedIds = new Set(issues.filter(isPinned).map((i) => i.id));
   for (const id of pinnedIds) keep.add(id);
@@ -243,9 +269,12 @@ function renderIssueTree() {
     }
   }
   if (!shown) {
-    issueTree.innerHTML = onlyMine
-      ? '<div class="transcript-empty" style="padding:10px">Nothing of yours is running right now.</div>'
-      : '<div class="transcript-empty" style="padding:10px">Nothing actively worked on right now.</div>';
+    const message = issueFilterText
+      ? 'Nothing matches that filter.'
+      : onlyMine
+        ? 'Nothing of yours is running right now.'
+        : 'Nothing actively worked on right now.';
+    issueTree.innerHTML = `<div class="transcript-empty" style="padding:10px">${message}</div>`;
   }
   issueCountEl.textContent = `${relevantLiveIds.size} being worked`;
 }
@@ -594,6 +623,11 @@ commentForm.addEventListener('submit', async (e) => {
 
 onlyMineCheckbox.addEventListener('change', () => {
   onlyMine = onlyMineCheckbox.checked;
+  renderIssueTree();
+});
+
+issueFilterInput.addEventListener('input', () => {
+  issueFilterText = issueFilterInput.value.trim().toLowerCase();
   renderIssueTree();
 });
 

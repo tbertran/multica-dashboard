@@ -226,6 +226,16 @@ body {
   color: var(--faint-foreground);
 }
 
+#issue-filter {
+  width: 160px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 12px;
+}
+
 #flt-lookup-form {
   display: flex;
   align-items: center;
