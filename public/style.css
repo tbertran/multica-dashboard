@@ -666,6 +666,15 @@ main {
 .issue-row.context-row .issue-id { font-size: 11px; }
 .issue-row.context-row .issue-toggle { margin-top: 2px; }
 
+.issue-row.pinned {
+  margin: 4px 0 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  background: var(--surface);
+}
+
+.issue-row.pinned .issue-title { color: var(--muted-foreground); font-size: 12px; font-weight: 500; }
+
 .skeleton {
   height: 64px;
   margin: 6px 0;

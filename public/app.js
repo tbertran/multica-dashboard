@@ -66,6 +66,8 @@ let autoScroll = true;
 let hiddenAgentIds = new Set();
 let issueUrlBase = null;
 let meId = null;
+let pinnedIdentifier = null;
+let mine = { originPropertyId: null, originIds: new Set(), agentNameRe: null, descriptionRe: null };
 let replyTargetCommentId = null;
 
 const isPhone = window.matchMedia('(max-width: 860px)');
@@ -138,7 +140,30 @@ async function getJSON(url) {
   return res.json();
 }
 
+// refreshAll does not await this: the Origin list comes from a Linear CLI
+// query, and its failure must not take the issue tree down.
+let extensionLoaded = false;
+async function loadConfig() {
+  const cfg = await getJSON('/api/config');
+  issueUrlBase = cfg.issueUrlBase;
+  pinnedIdentifier = cfg.mine.pinnedIdentifier;
+  if (cfg.extension && !extensionLoaded) {
+    extensionLoaded = true;
+    import('/local/extra.js');
+  }
+  const originsChanged = cfg.mine.originIds.length !== mine.originIds.size
+    || cfg.mine.originIds.some((id) => !mine.originIds.has(id));
+  mine = {
+    originPropertyId: cfg.mine.originPropertyId,
+    originIds: new Set(cfg.mine.originIds),
+    agentNameRe: cfg.mine.agentNamePattern && new RegExp(cfg.mine.agentNamePattern),
+    descriptionRe: cfg.mine.descriptionPattern && new RegExp(cfg.mine.descriptionPattern),
+  };
+  if (onlyMine && originsChanged) renderIssueTree();
+}
+
 async function refreshAll() {
+  loadConfig().catch((err) => console.error(err));
   const [agentList, working, issueList] = await Promise.all([
     getJSON('/api/agents'),
     getJSON('/api/working-agents'),
@@ -237,7 +262,11 @@ function liveKeepSet(byId, liveIds) {
 }
 
 function isMine(issue) {
-  return issue.creator_type === 'member' && issue.creator_id === meId;
+  if (issue.creator_type === 'member') return issue.creator_id === meId;
+  if (mine.agentNameRe && issue.creator_type === 'agent' && mine.agentNameRe.test(agents.get(issue.creator_id)?.name || '')) return true;
+  if (mine.descriptionRe && mine.descriptionRe.test(issue.description || '')) return true;
+  const origin = mine.originPropertyId && issue.properties && issue.properties[mine.originPropertyId];
+  return !!origin && mine.originIds.has(origin);
 }
 
 // "Only mine" narrows which live issues count as live — it never replaces the
@@ -266,17 +295,24 @@ function filterByText(liveIds, byId) {
   return filtered;
 }
 
+function isPinned(issue) {
+  return issue.identifier === pinnedIdentifier;
+}
+
 function renderIssueTree() {
   const { byParent, byId } = buildTree();
   const liveIds = visibleWorkingIssueIds();
   let relevantLiveIds = onlyMine ? filterToMine(liveIds, byId) : liveIds;
   relevantLiveIds = filterByText(relevantLiveIds, byId);
   const keep = liveKeepSet(byId, relevantLiveIds);
+  const pinnedIds = new Set(issues.filter(isPinned).map((i) => i.id));
+  for (const id of pinnedIds) keep.add(id);
   const scrollTop = issueTree.scrollTop;
   issueTree.innerHTML = '';
   const roots = byParent.get('root') || [];
   let shown = 0;
-  for (const issue of roots) {
+  const orderedRoots = [...roots.filter((r) => pinnedIds.has(r.id)), ...roots.filter((r) => !pinnedIds.has(r.id))];
+  for (const issue of orderedRoots) {
     const node = renderIssueNode(issue, byParent, 0, keep, relevantLiveIds);
     if (node) {
       issueTree.appendChild(node);
@@ -311,6 +347,7 @@ function renderIssueNode(issue, byParent, depth, keep, liveIds) {
   row.setAttribute('role', 'listitem');
   row.className = `issue-row status-${issue.status_category || issue.status}`
     + (isLive ? ' is-live' : ' context-row')
+    + (isPinned(issue) ? ' pinned' : '')
     + (issue.id === selectedIssueId ? ' selected' : '');
   const parsedAgent = agent ? parseAgentName(agent.name) : null;
   row.innerHTML = `
@@ -428,15 +465,20 @@ async function loadConversations(issueId) {
   const myThreads = roots.filter((root) => root.author_id === meId || (repliesByRoot.get(root.id) || []).some((r) => r.author_id === meId));
   if (myThreads.length) replyTargetCommentId = myThreads[myThreads.length - 1].id;
 
-  if (!myThreads.length) return;
+  const issue = issues.find((i) => i.id === issueId);
+  const showAllThreads = issue && isPinned(issue);
+  const threadsToShow = showAllThreads ? roots : myThreads;
+  if (!threadsToShow.length) return;
 
   const details = document.createElement('details');
   details.className = 'conversations';
   details.open = true;
   const summary = document.createElement('summary');
-  summary.textContent = `Your conversation${myThreads.length > 1 ? 's' : ''} (${myThreads.length})`;
+  summary.textContent = showAllThreads
+    ? `Comments (${threadsToShow.length})`
+    : `Your conversation${threadsToShow.length > 1 ? 's' : ''} (${threadsToShow.length})`;
   details.appendChild(summary);
-  for (const root of myThreads) {
+  for (const root of threadsToShow) {
     const thread = document.createElement('div');
     thread.className = 'thread';
     thread.appendChild(renderComment(root));
@@ -678,10 +720,6 @@ transcriptHeader.addEventListener('touchend', (e) => {
   else if (dy < -40) setSheet(true);
 }, { passive: true });
 
-getJSON('/api/config').then((cfg) => {
-  issueUrlBase = cfg.issueUrlBase;
-  if (onlyMine) renderIssueTree();
-}).catch((err) => console.error(err));
 getJSON('/api/me').then((me) => { meId = me.id; }).catch((err) => console.error(err));
 
 // The local Node server not running yet (machine just woke, hasn't been

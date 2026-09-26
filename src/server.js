@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
@@ -10,6 +11,7 @@ export const PORT = Number(process.env.MULTICA_DASHBOARD_PORT) || 4175;
 const HOST = '0.0.0.0';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
+const LOCAL = path.join(ROOT, 'local');
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.ico': 'image/x-icon' };
 
@@ -20,8 +22,9 @@ process.on('uncaughtException', (err) => console.error('uncaught exception (serv
 process.on('unhandledRejection', (err) => console.error('unhandled rejection (server kept running):', err));
 
 async function serveStatic(req, res) {
-  const file = req.url === '/' ? '/index.html' : req.url;
-  const full = path.join(PUBLIC, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
+  const isLocal = req.url.startsWith('/local/');
+  const file = isLocal ? req.url.slice('/local'.length) : req.url === '/' ? '/index.html' : req.url;
+  const full = path.join(isLocal ? LOCAL : PUBLIC, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
   try {
     const body = await readFile(full);
     res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream' });
@@ -73,6 +76,27 @@ async function openExternal(res, rawUrl) {
   });
 }
 
+async function loadLocal(name) {
+  try {
+    return (await import(`../local/${name}.js`)).default;
+  } catch (err) {
+    if (err.code === 'ERR_MODULE_NOT_FOUND') return null;
+    throw err;
+  }
+}
+
+async function mineConfig() {
+  const localMine = await loadLocal('mine');
+  const extra = localMine ? await localMine() : {};
+  return {
+    originPropertyId: extra.originProperty ? await multica.propertyId(extra.originProperty) : null,
+    originIds: extra.originIds || [],
+    agentNamePattern: extra.agentNamePattern || null,
+    descriptionPattern: extra.descriptionPattern || null,
+    pinnedIdentifier: extra.pinnedIdentifier || null,
+  };
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/open') return openExternal(res, url.searchParams.get('url'));
@@ -83,8 +107,11 @@ async function handler(req, res) {
     return;
   }
   if (url.pathname === '/api/config') return sendJSON(res, async () => {
-    return { issueUrlBase: await multica.issueUrlBase() };
+    return { issueUrlBase: await multica.issueUrlBase(), mine: await mineConfig(), extension: existsSync(path.join(LOCAL, 'extra.js')) };
   });
+  if (url.pathname.startsWith('/api/local/')) {
+    return sendJSON(res, async () => (await loadLocal('api'))(url.pathname.slice('/api/local/'.length)));
+  }
   if (url.pathname === '/api/agents') return sendJSON(res, multica.listAgents);
   if (url.pathname === '/api/working-agents') return sendJSON(res, multica.listWorkingAgents);
   if (url.pathname === '/api/issues') return sendJSON(res, multica.listOpenIssues);

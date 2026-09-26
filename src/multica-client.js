@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { loadProfile } from './config.js';
 
-async function api(pathAndQuery, { method = 'GET', body } = {}) {
+export async function api(pathAndQuery, { method = 'GET', body } = {}) {
   const cfg = await loadProfile();
   const sep = pathAndQuery.includes('?') ? '&' : '?';
   const url = `${cfg.serverUrl}${pathAndQuery}${sep}workspace_id=${cfg.workspaceId}`;
@@ -65,6 +65,15 @@ export async function createComment(issueId, content, parentId) {
 
 export async function listComments(issueId) {
   return api(`/api/issues/${issueId}/comments`);
+}
+
+const propertyIds = new Map();
+export async function propertyId(name) {
+  if (!propertyIds.has(name)) {
+    const resp = await api('/api/properties');
+    propertyIds.set(name, resp.properties.find((p) => p.name === name)?.id ?? null);
+  }
+  return propertyIds.get(name);
 }
 
 export async function getMe() {

@@ -68,3 +68,15 @@ as you. Only run it on a network you trust.
 
 `scripts/supervisor.ps1` and `scripts/run-hidden.vbs` are optional Windows helpers that keep
 the server running in the background; on macOS or Linux use any process manager.
+
+## Local extension (optional)
+
+Anything specific to your own workspace stays out of the repo in a gitignored `local/`
+folder, all optional:
+
+- `local/mine.js` — default export returning `{ originProperty, originIds, agentNamePattern,
+  descriptionPattern, pinnedIdentifier }`. Widens "Mine" beyond issues you created (matches on a
+  custom property's values, an agent-name regex, or a description regex) and pins one issue at
+  the top of the list.
+- `local/api.js` — default export `async (subpath) => data`, served at `/api/local/<subpath>`.
+- `local/extra.js` (+ any CSS it loads) — a browser module the page imports at startup.
